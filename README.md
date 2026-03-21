@@ -1,9 +1,8 @@
 # Hosted
 Web page sharing
 
-## Configuration
+## Data source
 
-Set `NEWSAPI_KEY` in Streamlit secrets or as an environment variable before running the app.
+The app uses free Google News RSS search feeds instead of NewsAPI, which avoids API key setup and rate-limit issues for the hosted demo.
 
-
-When NewsAPI is unavailable in the current environment, the app falls back to demo trend data so the visualization still renders.
+When Google News RSS is unavailable in the current environment, the app falls back to demo trend data so the visualization still renders.

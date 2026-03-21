@@ -1,15 +1,19 @@
-import os
+import html
+import re
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote_plus
 
-import streamlit as st
-import requests
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import matplotlib.cm as cm
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import requests
+import streamlit as st
 from matplotlib.colors import LinearSegmentedColormap
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from datetime import datetime, timedelta
 
 # ==========================================
 # 1. THE "ONCE A DAY" LOGIC (CACHE)
@@ -29,11 +33,13 @@ LEADERS = {
 
 TAIL_WEEKS = 4
 WEEK_LENGTH_DAYS = 7
-NEWS_API_SECRET_NAME = "NEWSAPI_KEY"
+GOOGLE_NEWS_RSS_BASE_URL = "https://news.google.com/rss/search"
 
 
-def get_newsapi_key():
-    return st.secrets.get(NEWS_API_SECRET_NAME) or os.environ.get(NEWS_API_SECRET_NAME)
+def clean_text(value):
+    value = re.sub(r"<[^>]+>", " ", value or "")
+    value = html.unescape(value)
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def generate_demo_data():
@@ -51,7 +57,7 @@ def generate_demo_data():
     }
 
     history_rows = []
-    today = datetime.now()
+    today = datetime.now(timezone.utc)
     for leader in LEADERS:
         aggression_base, influence_base = base_profiles[leader]
         for weeks_ago in range(TAIL_WEEKS - 1, -1, -1):
@@ -84,9 +90,7 @@ def analyze_articles(articles, analyzer):
 
     raw_volume = len(articles)
     compound_scores = [
-        analyzer.polarity_scores(
-            (article.get("title") or "") + " " + (article.get("description") or "")
-        )["compound"]
+        analyzer.polarity_scores(f"{article['title']} {article['description']}")["compound"]
         for article in articles
     ]
     avg_sentiment = np.mean(compound_scores) if compound_scores else 0
@@ -98,47 +102,66 @@ def analyze_articles(articles, analyzer):
     }
 
 
+def fetch_google_news_articles(query):
+    encoded_query = quote_plus(f"{query} when:{TAIL_WEEKS * WEEK_LENGTH_DAYS}d")
+    url = (
+        f"{GOOGLE_NEWS_RSS_BASE_URL}?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
+    )
+
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+
+    articles = []
+    for item in root.findall("./channel/item"):
+        published_at = item.findtext("pubDate", default="")
+        try:
+            published_dt = parsedate_to_datetime(published_at).astimezone(timezone.utc)
+        except (TypeError, ValueError, AttributeError):
+            continue
+
+        articles.append(
+            {
+                "title": clean_text(item.findtext("title", default="")),
+                "description": clean_text(item.findtext("description", default="")),
+                "published_at": published_dt,
+            }
+        )
+
+    return articles
+
+
 # This command tells the server: "Run the function below ONLY if 24 hours have passed
 # since the last run. Otherwise, show the saved data."
 @st.cache_data(ttl=86400)
 def fetch_data_once_a_day():
-    api_key = get_newsapi_key()
-    if not api_key:
-        raise RuntimeError(
-            f"Missing {NEWS_API_SECRET_NAME}. Add it to Streamlit secrets or the environment."
-        )
-
     analyzer = SentimentIntensityAnalyzer()
     history_results = []
-
-    today = datetime.now()
+    today = datetime.now(timezone.utc)
 
     for name, query in LEADERS.items():
+        try:
+            articles = fetch_google_news_articles(query)
+        except (requests.RequestException, ET.ParseError):
+            articles = []
+
         for weeks_ago in range(TAIL_WEEKS - 1, -1, -1):
             window_start = today - timedelta(days=(weeks_ago + 1) * WEEK_LENGTH_DAYS)
             window_end = today - timedelta(days=weeks_ago * WEEK_LENGTH_DAYS)
-            from_date = window_start.strftime("%Y-%m-%d")
-            to_date = window_end.strftime("%Y-%m-%d")
-            url = (
-                "https://newsapi.org/v2/everything?"
-                f"q={query}&from={from_date}&to={to_date}&sortBy=publishedAt"
-                f"&language=en&pageSize=100&apiKey={api_key}"
-            )
+            window_articles = [
+                article
+                for article in articles
+                if window_start <= article["published_at"] < window_end
+            ]
 
-            try:
-                response = requests.get(url, timeout=15).json()
-                articles = response.get("articles", [])
-            except requests.RequestException:
-                articles = []
-
-            analyzed = analyze_articles(articles, analyzer)
+            analyzed = analyze_articles(window_articles, analyzer)
             if not analyzed:
                 continue
 
             history_results.append(
                 {
                     "Leader": name,
-                    "Date": to_date,
+                    "Date": window_end,
                     **analyzed,
                     "IsDemo": False,
                 }
@@ -150,8 +173,6 @@ def fetch_data_once_a_day():
 
     max_vol = history_df["Volume"].max()
     history_df["Influence"] = (history_df["Volume"] / max_vol) * 95 + 5
-    history_df["Date"] = pd.to_datetime(history_df["Date"])
-
     latest_dates = history_df.groupby("Leader")["Date"].transform("max")
     current_df = (
         history_df[history_df["Date"] == latest_dates]
@@ -186,15 +207,14 @@ def plot_chart(df, history_df):
     )
 
     # Quadrants
-    ax.add_patch(patches.Rectangle((50, 50), 50, 50, color="#FF4D8D", alpha=0.12))  # War
-    ax.add_patch(patches.Rectangle((0, 50), 50, 50, color="#00F5A0", alpha=0.10))  # Peace
-    ax.add_patch(patches.Rectangle((50, 0), 50, 50, color="#FFC857", alpha=0.10))  # Rogue
-    ax.add_patch(patches.Rectangle((0, 0), 50, 50, color="#8A8FB2", alpha=0.10))  # Isolated
+    ax.add_patch(patches.Rectangle((50, 50), 50, 50, color="#FF4D8D", alpha=0.12))
+    ax.add_patch(patches.Rectangle((0, 50), 50, 50, color="#00F5A0", alpha=0.10))
+    ax.add_patch(patches.Rectangle((50, 0), 50, 50, color="#FFC857", alpha=0.10))
+    ax.add_patch(patches.Rectangle((0, 0), 50, 50, color="#8A8FB2", alpha=0.10))
 
     ax.axhline(50, color="#3BE7FF", linewidth=1.1, alpha=0.25, zorder=1)
     ax.axvline(50, color="#3BE7FF", linewidth=1.1, alpha=0.25, zorder=1)
 
-    # Plot historical tails and current points
     colors = cm.get_cmap("cool", len(df))
     for i, row in df.iterrows():
         color = colors(i)
@@ -246,7 +266,6 @@ def plot_chart(df, history_df):
             fontweight="bold",
         )
 
-    # Labels and Grid
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 100)
     ax.set_xlabel("PEACEFUL <------------------> HOSTILE", color="#9CF6FF")
@@ -347,18 +366,20 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Load data (This uses the cache!)
 try:
     df, history_df = fetch_data_once_a_day()
     using_demo_data = bool(history_df.get("IsDemo", pd.Series([False])).all())
 except Exception as e:
-    st.warning(f"Live NewsAPI data is unavailable right now, so demo trend data is being shown instead. ({e})")
+    st.warning(
+        "Google News RSS is unavailable right now, so demo trend data is being shown instead. "
+        f"({e})"
+    )
     df, history_df = generate_demo_data()
     using_demo_data = True
 
 if not df.empty:
     if using_demo_data:
-        st.info("Displaying demo leader history because live NewsAPI results were unavailable in this environment.")
+        st.info("Displaying demo leader history because live Google News RSS results were unavailable in this environment.")
 
     strongest_signal = df.loc[df["Influence"].idxmax(), "Leader"]
     highest_alert = df.loc[df["Aggression"].idxmax(), "Leader"]
