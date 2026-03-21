@@ -26,13 +26,8 @@ LEADERS = {
     "Netanyahu": "Netanyahu Israel",
 }
 
-TAIL_WEEKS = 4
-WEEK_LENGTH_DAYS = 7
-NEWS_API_SECRET_NAME = "NEWSAPI_KEY"
-
-
-def get_newsapi_key():
-    return st.secrets.get(NEWS_API_SECRET_NAME) or os.environ.get(NEWS_API_SECRET_NAME)
+TAIL_DAYS = 7
+API_KEY = "3f767f5d796b470e96e93b4df8707df7"
 
 
 def analyze_articles(articles, analyzer):
@@ -59,27 +54,18 @@ def analyze_articles(articles, analyzer):
 # since the last run. Otherwise, show the saved data."
 @st.cache_data(ttl=86400)
 def fetch_data_once_a_day():
-    api_key = get_newsapi_key()
-    if not api_key:
-        raise RuntimeError(
-            f"Missing {NEWS_API_SECRET_NAME}. Add it to Streamlit secrets or the environment."
-        )
-
     analyzer = SentimentIntensityAnalyzer()
     history_results = []
 
-    today = datetime.now()
-
     for name, query in LEADERS.items():
-        for weeks_ago in range(TAIL_WEEKS - 1, -1, -1):
-            window_start = today - timedelta(days=(weeks_ago + 1) * WEEK_LENGTH_DAYS)
-            window_end = today - timedelta(days=weeks_ago * WEEK_LENGTH_DAYS)
-            from_date = window_start.strftime("%Y-%m-%d")
-            to_date = window_end.strftime("%Y-%m-%d")
+        for days_ago in range(TAIL_DAYS - 1, -1, -1):
+            day_start = datetime.now() - timedelta(days=days_ago)
+            from_date = day_start.strftime("%Y-%m-%d")
+            to_date = (day_start + timedelta(days=1)).strftime("%Y-%m-%d")
             url = (
                 "https://newsapi.org/v2/everything?"
                 f"q={query}&from={from_date}&to={to_date}&sortBy=publishedAt"
-                f"&language=en&pageSize=100&apiKey={api_key}"
+                f"&language=en&pageSize=100&apiKey={API_KEY}"
             )
 
             try:
@@ -95,7 +81,7 @@ def fetch_data_once_a_day():
             history_results.append(
                 {
                     "Leader": name,
-                    "Date": to_date,
+                    "Date": from_date,
                     **analyzed,
                 }
             )
@@ -180,10 +166,7 @@ def plot_chart(df, history_df):
     ax.set_ylim(0, 100)
     ax.set_xlabel("PEACEFUL <------------------> HOSTILE", color="white")
     ax.set_ylabel("LOCAL <---------------------> GLOBAL", color="white")
-    ax.set_title(
-        f"Global Sentiment Watch (Updated Daily, {TAIL_WEEKS}-Week Tails)",
-        color="white",
-    )
+    ax.set_title(f"Global Sentiment Watch (Updated Daily, {TAIL_DAYS}-Day Tails)", color="white")
     ax.grid(True, linestyle=":", alpha=0.3)
 
     return fig
@@ -196,7 +179,7 @@ st.set_page_config(page_title="Chaos Watcher", layout="centered")
 st.title("🌍 Global Leaders Sentiment Analysis")
 st.write(
     "This chart updates automatically once every 24 hours to track global news sentiment, "
-    "including a rolling weekly tail covering the last 4 weeks for each leader."
+no    "including a rolling 7-day historical tail for each leader."
 )
 
 # Load data (This uses the cache!)
