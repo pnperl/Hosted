@@ -36,6 +36,48 @@ def get_newsapi_key():
     return st.secrets.get(NEWS_API_SECRET_NAME) or os.environ.get(NEWS_API_SECRET_NAME)
 
 
+def generate_demo_data():
+    base_profiles = {
+        "Putin": (78, 84),
+        "Trump": (64, 92),
+        "Modi": (42, 73),
+        "Kim Jong Un": (88, 58),
+        "Xi Jinping": (54, 90),
+        "Khamenei": (81, 61),
+        "Zelenskyy": (37, 76),
+        "Macron": (34, 68),
+        "Scholz": (29, 63),
+        "Netanyahu": (74, 71),
+    }
+
+    history_rows = []
+    today = datetime.now()
+    for leader in LEADERS:
+        aggression_base, influence_base = base_profiles[leader]
+        for weeks_ago in range(TAIL_WEEKS - 1, -1, -1):
+            drift = TAIL_WEEKS - weeks_ago - 1
+            history_rows.append(
+                {
+                    "Leader": leader,
+                    "Date": today - timedelta(days=weeks_ago * WEEK_LENGTH_DAYS),
+                    "Aggression": max(0, min(100, aggression_base + (drift * 2.8) - 4.2)),
+                    "Influence": max(5, min(100, influence_base + (drift * 1.7) - 2.5)),
+                    "Volume": max(10, int(influence_base + (drift * 3))),
+                    "IsDemo": True,
+                }
+            )
+
+    history_df = pd.DataFrame(history_rows).sort_values(["Leader", "Date"]).reset_index(drop=True)
+    latest_dates = history_df.groupby("Leader")["Date"].transform("max")
+    current_df = (
+        history_df[history_df["Date"] == latest_dates]
+        .sort_values("Leader")
+        .reset_index(drop=True)
+    )
+
+    return current_df, history_df
+
+
 def analyze_articles(articles, analyzer):
     if not articles:
         return None
@@ -98,12 +140,13 @@ def fetch_data_once_a_day():
                     "Leader": name,
                     "Date": to_date,
                     **analyzed,
+                    "IsDemo": False,
                 }
             )
 
     history_df = pd.DataFrame(history_results)
     if history_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
+        return generate_demo_data()
 
     max_vol = history_df["Volume"].max()
     history_df["Influence"] = (history_df["Volume"] / max_vol) * 95 + 5
@@ -307,31 +350,38 @@ st.markdown(
 # Load data (This uses the cache!)
 try:
     df, history_df = fetch_data_once_a_day()
-    if not df.empty:
-        strongest_signal = df.loc[df["Influence"].idxmax(), "Leader"]
-        highest_alert = df.loc[df["Aggression"].idxmax(), "Leader"]
-        st.markdown(
-            f"""
-            <div class="metric-strip">
-                <div class="metric-card">
-                    <div class="metric-label">Tracked Leaders</div>
-                    <div class="metric-value">{len(df)}</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Strongest Reach</div>
-                    <div class="metric-value">{strongest_signal}</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Highest Alert</div>
-                    <div class="metric-value">{highest_alert}</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.pyplot(plot_chart(df, history_df))
-        st.dataframe(df[["Leader", "Aggression", "Influence"]])
-    else:
-        st.error("No data found. NewsAPI might be blocking cloud requests (Free Tier limitation).")
+    using_demo_data = bool(history_df.get("IsDemo", pd.Series([False])).all())
 except Exception as e:
-    st.error(f"An error occurred: {e}")
+    st.warning(f"Live NewsAPI data is unavailable right now, so demo trend data is being shown instead. ({e})")
+    df, history_df = generate_demo_data()
+    using_demo_data = True
+
+if not df.empty:
+    if using_demo_data:
+        st.info("Displaying demo leader history because live NewsAPI results were unavailable in this environment.")
+
+    strongest_signal = df.loc[df["Influence"].idxmax(), "Leader"]
+    highest_alert = df.loc[df["Aggression"].idxmax(), "Leader"]
+    st.markdown(
+        f"""
+        <div class="metric-strip">
+            <div class="metric-card">
+                <div class="metric-label">Tracked Leaders</div>
+                <div class="metric-value">{len(df)}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Strongest Reach</div>
+                <div class="metric-value">{strongest_signal}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Highest Alert</div>
+                <div class="metric-value">{highest_alert}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.pyplot(plot_chart(df, history_df))
+    st.dataframe(df[["Leader", "Aggression", "Influence"]])
+else:
+    st.error("No live or demo data could be prepared.")
