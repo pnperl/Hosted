@@ -74,9 +74,12 @@ def generate_demo_data():
             )
 
     history_df = pd.DataFrame(history_rows).sort_values(["Leader", "Date"]).reset_index(drop=True)
-    latest_dates = history_df.groupby("Leader")["Date"].transform("max")
+
+    # FIX #5: Use groupby.tail(1) instead of equality datetime match
     current_df = (
-        history_df[history_df["Date"] == latest_dates]
+        history_df.sort_values("Date")
+        .groupby("Leader")
+        .tail(1)
         .sort_values("Leader")
         .reset_index(drop=True)
     )
@@ -94,7 +97,10 @@ def analyze_articles(articles, analyzer):
         for article in articles
     ]
     avg_sentiment = np.mean(compound_scores) if compound_scores else 0
-    aggression_score = ((avg_sentiment * -1) + 1) * 50
+
+    # FIX #3: Clamp aggression score to [0, 100] in case avg_sentiment ever
+    # drifts outside VADER's guaranteed [-1, +1] range (e.g. after refactor).
+    aggression_score = max(0, min(100, ((avg_sentiment * -1) + 1) * 50))
 
     return {
         "Aggression": aggression_score,
@@ -138,16 +144,24 @@ def fetch_data_once_a_day():
     analyzer = SentimentIntensityAnalyzer()
     history_results = []
     today = datetime.now(timezone.utc)
+    missing_leaders = []  # FIX #2: track leaders with zero articles across all windows
 
     for name, query in LEADERS.items():
         try:
             articles = fetch_google_news_articles(query)
-        except (requests.RequestException, ET.ParseError):
+        except (requests.RequestException, ET.ParseError) as e:
+            # FIX #8: Surface per-leader fetch errors in a structured way
+            st.warning(f"Could not fetch news for {name}: {e}")
             articles = []
 
+        leader_had_data = False
         for weeks_ago in range(TAIL_WEEKS - 1, -1, -1):
             window_start = today - timedelta(days=(weeks_ago + 1) * WEEK_LENGTH_DAYS)
-            window_end = today - timedelta(days=weeks_ago * WEEK_LENGTH_DAYS)
+            # FIX #6: Add 1 second to window_end for the most-recent window so
+            # articles published right at fetch-time are not excluded.
+            raw_window_end = today - timedelta(days=weeks_ago * WEEK_LENGTH_DAYS)
+            window_end = raw_window_end + (timedelta(seconds=1) if weeks_ago == 0 else timedelta(0))
+
             window_articles = [
                 article
                 for article in articles
@@ -156,26 +170,60 @@ def fetch_data_once_a_day():
 
             analyzed = analyze_articles(window_articles, analyzer)
             if not analyzed:
+                # FIX #2: Insert a neutral placeholder row so the leader always
+                # appears on the chart, even when a week window has no coverage.
+                history_results.append(
+                    {
+                        "Leader": name,
+                        "Date": raw_window_end,
+                        "Aggression": 50.0,   # neutral
+                        "Volume": 0,
+                        "IsDemo": False,
+                    }
+                )
                 continue
 
+            leader_had_data = True
             history_results.append(
                 {
                     "Leader": name,
-                    "Date": window_end,
+                    "Date": raw_window_end,
                     **analyzed,
                     "IsDemo": False,
                 }
             )
 
+        if not leader_had_data:
+            missing_leaders.append(name)
+
     history_df = pd.DataFrame(history_results)
     if history_df.empty:
         return generate_demo_data()
 
-    max_vol = history_df["Volume"].max()
-    history_df["Influence"] = (history_df["Volume"] / max_vol) * 95 + 5
-    latest_dates = history_df.groupby("Leader")["Date"].transform("max")
+    if missing_leaders:
+        st.info(
+            f"No live articles found for: {', '.join(missing_leaders)}. "
+            "Their positions are shown at neutral (50) aggression."
+        )
+
+    # FIX #4: Normalise Influence per-leader (relative to each leader's own
+    # max volume) so a historical spike for one leader does not compress
+    # every other leader's current-week influence score.
+    def normalize_influence(group):
+        leader_max = group["Volume"].max()
+        if leader_max == 0:
+            group["Influence"] = 5.0
+        else:
+            group["Influence"] = (group["Volume"] / leader_max) * 95 + 5
+        return group
+
+    history_df = history_df.groupby("Leader", group_keys=False).apply(normalize_influence)
+
+    # FIX #5: Use groupby.tail(1) instead of equality datetime match
     current_df = (
-        history_df[history_df["Date"] == latest_dates]
+        history_df.sort_values("Date")
+        .groupby("Leader")
+        .tail(1)
         .sort_values("Leader")
         .reset_index(drop=True)
     )
@@ -215,9 +263,13 @@ def plot_chart(df, history_df):
     ax.axhline(50, color="#3BE7FF", linewidth=1.1, alpha=0.25, zorder=1)
     ax.axvline(50, color="#3BE7FF", linewidth=1.1, alpha=0.25, zorder=1)
 
-    colors = cm.get_cmap("cool", len(df))
-    for i, row in df.iterrows():
-        color = colors(i)
+    # FIX #11: cm.get_cmap is deprecated — use matplotlib.colormaps instead
+    colors = plt.colormaps["cool"].resampled(len(df))
+
+    # FIX #7: Use enumerate so color index is always sequential 0..N-1,
+    # regardless of the DataFrame's actual index values.
+    for idx, (_, row) in enumerate(df.iterrows()):
+        color = colors(idx)
         leader_history = history_df[history_df["Leader"] == row["Leader"]].sort_values("Date")
 
         if len(leader_history) > 1:
@@ -368,7 +420,10 @@ st.markdown(
 
 try:
     df, history_df = fetch_data_once_a_day()
-    using_demo_data = bool(history_df.get("IsDemo", pd.Series([False])).all())
+    # FIX #1: Use column membership check instead of DataFrame.get(), which is
+    # unreliable for this purpose and would incorrectly flag live data as demo
+    # when the IsDemo column is absent.
+    using_demo_data = history_df["IsDemo"].all() if "IsDemo" in history_df.columns else False
 except Exception as e:
     st.warning(
         "Google News RSS is unavailable right now, so demo trend data is being shown instead. "
@@ -403,6 +458,7 @@ if not df.empty:
         unsafe_allow_html=True,
     )
     st.pyplot(plot_chart(df, history_df))
-    st.dataframe(df[["Leader", "Aggression", "Influence"]])
+    # FIX #10: Round display scores to 1 decimal place for readability
+    st.dataframe(df[["Leader", "Aggression", "Influence"]].round(1))
 else:
     st.error("No live or demo data could be prepared.")
