@@ -1,3 +1,5 @@
+import os
+
 import streamlit as st
 import requests
 import pandas as pd
@@ -177,7 +179,7 @@ st.set_page_config(page_title="Chaos Watcher", layout="centered")
 st.title("🌍 Global Leaders Sentiment Analysis")
 st.write(
     "This chart updates automatically once every 24 hours to track global news sentiment, "
-    "including a rolling 7-day historical tail for each leader."
+no    "including a rolling 7-day historical tail for each leader."
 )
 
 # Load data (This uses the cache!)
