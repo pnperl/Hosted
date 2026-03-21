@@ -178,8 +178,7 @@ def plot_chart(df, history_df):
 st.set_page_config(page_title="Chaos Watcher", layout="centered")
 st.title("🌍 Global Leaders Sentiment Analysis")
 st.write(
-    "This chart updates automatically once every 24 hours to track global news sentiment, ",
-no    "including a rolling 7-day historical tail for each leader."
+    "This chart updates automatically once every 24 hours to track global news sentiment"
 )
 
 # Load data (This uses the cache!)
