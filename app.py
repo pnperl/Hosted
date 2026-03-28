@@ -188,47 +188,87 @@ def fetch_data_once_a_day():
 # ==========================================
 # 2. THE VISUALIZATION (OUTPUT)
 # ==========================================
-def _compute_non_overlapping_label_positions(df):
-    # Candidate offsets around marker in data coordinates.
+def _place_non_overlapping_annotations(ax, point_rows):
+    """
+    Place leader labels with collision checks in pixel space so labels
+    stay within the axes and avoid overlapping each other.
+    """
+    # Offsets in points relative to each marker.
     candidate_offsets = [
-        (2.4, 1.8),
-        (2.4, -1.8),
-        (-2.4, 1.8),
-        (-2.4, -1.8),
-        (0.0, 2.8),
-        (0.0, -2.8),
-        (3.2, 0.0),
-        (-3.2, 0.0),
+        (12, 8),
+        (12, -10),
+        (-12, 8),
+        (-12, -10),
+        (0, 14),
+        (0, -14),
+        (16, 0),
+        (-16, 0),
     ]
-    min_distance = 4.2
-    x_min, x_max = 1.5, 98.5
-    y_min, y_max = 2.0, 98.0
+    placed_bboxes = []
+    annotations = []
 
-    placed = []
-    positions = {}
-    for _, row in df.sort_values(["Influence", "Aggression"], ascending=[False, True]).iterrows():
-        base_x = float(row["Aggression"])
-        base_y = float(row["Influence"])
-        chosen = None
+    # Draw once so text extents can be measured.
+    ax.figure.canvas.draw()
+    renderer = ax.figure.canvas.get_renderer()
+    axes_bbox = ax.get_window_extent(renderer=renderer)
 
+    # Place high-influence labels first for best placement quality.
+    for row in sorted(point_rows, key=lambda item: item["Influence"], reverse=True):
+        annotation = ax.annotate(
+            row["Leader"].upper(),
+            xy=(row["Aggression"], row["Influence"]),
+            xytext=candidate_offsets[0],
+            textcoords="offset points",
+            color="#E9FCFF",
+            fontsize=8.8,
+            fontweight="bold",
+            va="center",
+            bbox={
+                "boxstyle": "round,pad=0.2",
+                "facecolor": (5 / 255, 8 / 255, 22 / 255, 0.78),
+                "edgecolor": (156 / 255, 246 / 255, 255 / 255, 0.22),
+                "linewidth": 0.7,
+            },
+            arrowprops={
+                "arrowstyle": "-",
+                "color": (156 / 255, 246 / 255, 255 / 255, 0.45),
+                "linewidth": 0.9,
+                "shrinkA": 3,
+                "shrinkB": 6,
+            },
+            zorder=6,
+        )
+
+        chosen_bbox = None
         for dx, dy in candidate_offsets:
-            lx = min(max(base_x + dx, x_min), x_max)
-            ly = min(max(base_y + dy, y_min), y_max)
-            if all((lx - px) ** 2 + (ly - py) ** 2 >= min_distance**2 for px, py in placed):
-                chosen = (lx, ly)
+            annotation.set_position((dx, dy))
+            ax.figure.canvas.draw()
+            bbox = annotation.get_window_extent(renderer=renderer).expanded(1.03, 1.12)
+
+            inside_axes = (
+                bbox.x0 >= axes_bbox.x0
+                and bbox.x1 <= axes_bbox.x1
+                and bbox.y0 >= axes_bbox.y0
+                and bbox.y1 <= axes_bbox.y1
+            )
+            collides = any(bbox.overlaps(existing) for existing in placed_bboxes)
+            if inside_axes and not collides:
+                chosen_bbox = bbox
                 break
 
-        if chosen is None:
-            stack_offset = min(6.0, 1.6 + len(placed) * 0.45)
-            chosen = (
-                min(max(base_x + 2.0, x_min), x_max),
-                min(max(base_y + stack_offset, y_min), y_max),
-            )
+        if chosen_bbox is None:
+            # Keep the last tested position but still clamp against edge collisions.
+            bbox = annotation.get_window_extent(renderer=renderer)
+            if bbox.x1 > axes_bbox.x1:
+                annotation.set_position((-16, annotation.xyann[1]))
+            elif bbox.x0 < axes_bbox.x0:
+                annotation.set_position((16, annotation.xyann[1]))
+            chosen_bbox = annotation.get_window_extent(renderer=renderer).expanded(1.03, 1.08)
 
-        placed.append(chosen)
-        positions[row["Leader"]] = chosen
+        placed_bboxes.append(chosen_bbox)
+        annotations.append(annotation)
 
-    return positions
+    return annotations
 
 
 def plot_chart(df, history_df):
@@ -267,6 +307,7 @@ def plot_chart(df, history_df):
 
     # FIX #7: Use enumerate so color index is always sequential 0..N-1,
     # regardless of the DataFrame's actual index values.
+    label_rows = []
     for idx, (_, row) in enumerate(df.iterrows()):
         color = colors(idx)
         leader_history = history_df[history_df["Leader"] == row["Leader"]].sort_values("Date")
@@ -308,31 +349,15 @@ def plot_chart(df, history_df):
             alpha=0.98,
             zorder=5,
         )
-        label_x, label_y = label_positions[row["Leader"]]
-        ax.annotate(
-            row["Leader"].upper(),
-            xy=(row["Aggression"], row["Influence"]),
-            xytext=(label_x, label_y),
-            textcoords="data",
-            color="#E9FCFF",
-            fontsize=8.8,
-            fontweight="bold",
-            va="center",
-            bbox={
-                "boxstyle": "round,pad=0.2",
-                "facecolor": (5 / 255, 8 / 255, 22 / 255, 0.78),
-                "edgecolor": (156 / 255, 246 / 255, 255 / 255, 0.22),
-                "linewidth": 0.7,
-            },
-            arrowprops={
-                "arrowstyle": "-",
-                "color": (156 / 255, 246 / 255, 255 / 255, 0.45),
-                "linewidth": 0.9,
-                "shrinkA": 3,
-                "shrinkB": 6,
-            },
-            zorder=6,
+        label_rows.append(
+            {
+                "Leader": row["Leader"],
+                "Aggression": row["Aggression"],
+                "Influence": row["Influence"],
+            }
         )
+
+    _place_non_overlapping_annotations(ax, label_rows)
 
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 100)
