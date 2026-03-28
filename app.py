@@ -188,6 +188,20 @@ def fetch_data_once_a_day():
 # ==========================================
 # 2. THE VISUALIZATION (OUTPUT)
 # ==========================================
+def _compute_non_overlapping_label_positions(df):
+    """
+    Backward-compatible shim for older chart code paths that still call this
+    helper name. Returns clamped data-coordinate anchors per leader.
+    """
+    return {
+        row["Leader"]: (
+            min(max(float(row["Aggression"]) + 2.0, 1.5), 98.5),
+            min(max(float(row["Influence"]) + 1.8, 2.0), 98.0),
+        )
+        for _, row in df.iterrows()
+    }
+
+
 def _place_non_overlapping_annotations(ax, point_rows):
     """
     Place leader labels with collision checks in pixel space so labels
