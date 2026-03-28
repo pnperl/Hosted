@@ -1,44 +1,39 @@
 # Hosted
 
-This repository now includes a practical **Daily Stock Bot** you can run from the terminal to generate a market briefing.
+## India Daily Market Bot
 
-## What it does
+This repo provides `daily_stock_bot.py`, a simple bot focused on India markets.
 
-`daily_stock_bot.py` builds a daily watchlist report for chosen US tickers:
+### What it covers (last 24 hours)
+- Overall Indian stock market news
+- Major India/national business headlines
+- Gujarat headlines
+- Jamnagar headlines
+- Rajkot headlines
+- Nifty50 news + price outlook
+- Crude, Gold, Silver India price outlook (INR converted)
 
-- Pulls ~30+ trading days of price history from Stooq
-- Computes 1-day/1-week change and 30-day volatility
-- Pulls recent Google News RSS headlines per ticker
-- Scores news sentiment with VADER
-- Produces a simple actionable recommendation (`BUY CANDIDATE`, `HOLD / REVIEW`, `WATCH / HIGH RISK`)
-
-## Quick start
-
-Install dependencies:
+### Run
 
 ```bash
 pip install -r requirements.txt
-```
-
-Run with defaults:
-
-```bash
 python daily_stock_bot.py
 ```
 
-Run with your own tickers:
+### Useful options
 
 ```bash
-python daily_stock_bot.py --tickers TSLA META AMD NFLX
+python daily_stock_bot.py --hours 24 --news-limit 4
+python daily_stock_bot.py --loop-every-hours 24
+python daily_stock_bot.py --print-cron
 ```
 
-Optional flags:
+### Daily schedule (every 24 hours)
+- Continuous mode: `--loop-every-hours 24`
+- Or cron mode (recommended):
+  `0 8 * * * cd /workspace/Hosted && /usr/bin/python3 daily_stock_bot.py >> market_bot.log 2>&1`
 
-- `--news-limit 5` (default: 5)
-- `--timeout 15` (default: 15 seconds)
-
-## Notes
-
-- If news fetch fails, the bot still generates a report using price action only.
-- Output is a text/markdown briefing designed for daily review and quick decision support.
-- This is a signal tool, **not financial advice**.
+### Notes
+- The bot filters headlines to the latest window (`--hours`, default 24).
+- If live feeds are blocked/unavailable, it automatically falls back to demo data so output still works.
+- Educational signal tool only, not financial advice.
