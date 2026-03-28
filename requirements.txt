@@ -4,3 +4,5 @@ pandas
 numpy
 matplotlib
 vaderSentiment
+google-generativeai>=0.7.0
+google-genai>=0.3.0

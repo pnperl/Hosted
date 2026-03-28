@@ -1,39 +1,34 @@
 # Hosted
 
-## India Daily Market Bot
+## Daily India Stock Bot (Gemini + Telegram)
 
-This repo provides `daily_stock_bot.py`, a simple bot focused on India markets.
-
-### What it covers (last 24 hours)
-- Overall Indian stock market news
-- Major India/national business headlines
-- Gujarat headlines
-- Jamnagar headlines
-- Rajkot headlines
-- Nifty50 news + price outlook
-- Crude, Gold, Silver India price outlook (INR converted)
-
-### Run
+This project now supports running a daily market brief bot via:
 
 ```bash
-pip install -r requirements.txt
-python daily_stock_bot.py
+python src/main.py
 ```
 
-### Useful options
+### What it does
+- Uses Gemini to generate a concise India market brief (simple language).
+- Sends the brief to Telegram (if bot token/chat id are configured).
+- Falls back to a safe built-in brief if Gemini is unavailable.
+
+### Required environment variables
+- `GEMINI_API_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- Optional: `GEMINI_MODEL` (default: `gemini-1.5-flash`)
+
+### Run daily every 24 hours
+Cron example:
 
 ```bash
-python daily_stock_bot.py --hours 24 --news-limit 4
-python daily_stock_bot.py --loop-every-hours 24
-python daily_stock_bot.py --print-cron
+0 8 * * * cd /workspace/Hosted && /usr/bin/python3 src/main.py >> market_bot.log 2>&1
 ```
 
-### Daily schedule (every 24 hours)
-- Continuous mode: `--loop-every-hours 24`
-- Or cron mode (recommended):
-  `0 8 * * * cd /workspace/Hosted && /usr/bin/python3 daily_stock_bot.py >> market_bot.log 2>&1`
+### Dependency note
+The Gemini client is implemented with compatibility for both:
+- new `google-genai` SDK
+- legacy `google-generativeai` SDK
 
-### Notes
-- The bot filters headlines to the latest window (`--hours`, default 24).
-- If live feeds are blocked/unavailable, it automatically falls back to demo data so output still works.
-- Educational signal tool only, not financial advice.
+This avoids failures like `AttributeError: module 'google.generativeai' has no attribute 'GenerativeModel'` on differing runner images.
