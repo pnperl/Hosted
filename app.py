@@ -303,6 +303,8 @@ def plot_chart(df, history_df):
     # FIX #11: cm.get_cmap is deprecated — use matplotlib.colormaps instead
     colors = plt.colormaps["cool"].resampled(len(df))
 
+    label_positions = _compute_non_overlapping_label_positions(df)
+
     # FIX #7: Use enumerate so color index is always sequential 0..N-1,
     # regardless of the DataFrame's actual index values.
     label_rows = []
