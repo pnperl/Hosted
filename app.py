@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
 
-import matplotlib.cm as cm
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -40,51 +39,6 @@ def clean_text(value):
     value = re.sub(r"<[^>]+>", " ", value or "")
     value = html.unescape(value)
     return re.sub(r"\s+", " ", value).strip()
-
-
-def generate_demo_data():
-    base_profiles = {
-        "Putin": (78, 84),
-        "Trump": (64, 92),
-        "Modi": (42, 73),
-        "Kim Jong Un": (88, 58),
-        "Xi Jinping": (54, 90),
-        "Khamenei": (81, 61),
-        "Zelenskyy": (37, 76),
-        "Macron": (34, 68),
-        "Scholz": (29, 63),
-        "Netanyahu": (74, 71),
-    }
-
-    history_rows = []
-    today = datetime.now(timezone.utc)
-    for leader in LEADERS:
-        aggression_base, influence_base = base_profiles[leader]
-        for weeks_ago in range(TAIL_WEEKS - 1, -1, -1):
-            drift = TAIL_WEEKS - weeks_ago - 1
-            history_rows.append(
-                {
-                    "Leader": leader,
-                    "Date": today - timedelta(days=weeks_ago * WEEK_LENGTH_DAYS),
-                    "Aggression": max(0, min(100, aggression_base + (drift * 2.8) - 4.2)),
-                    "Influence": max(5, min(100, influence_base + (drift * 1.7) - 2.5)),
-                    "Volume": max(10, int(influence_base + (drift * 3))),
-                    "IsDemo": True,
-                }
-            )
-
-    history_df = pd.DataFrame(history_rows).sort_values(["Leader", "Date"]).reset_index(drop=True)
-
-    # FIX #5: Use groupby.tail(1) instead of equality datetime match
-    current_df = (
-        history_df.sort_values("Date")
-        .groupby("Leader")
-        .tail(1)
-        .sort_values("Leader")
-        .reset_index(drop=True)
-    )
-
-    return current_df, history_df
 
 
 def analyze_articles(articles, analyzer):
@@ -198,7 +152,7 @@ def fetch_data_once_a_day():
 
     history_df = pd.DataFrame(history_results)
     if history_df.empty:
-        return generate_demo_data()
+        return pd.DataFrame(), pd.DataFrame()
 
     if missing_leaders:
         st.info(
@@ -234,10 +188,53 @@ def fetch_data_once_a_day():
 # ==========================================
 # 2. THE VISUALIZATION (OUTPUT)
 # ==========================================
+def _compute_non_overlapping_label_positions(df):
+    # Candidate offsets around marker in data coordinates.
+    candidate_offsets = [
+        (2.4, 1.8),
+        (2.4, -1.8),
+        (-2.4, 1.8),
+        (-2.4, -1.8),
+        (0.0, 2.8),
+        (0.0, -2.8),
+        (3.2, 0.0),
+        (-3.2, 0.0),
+    ]
+    min_distance = 4.2
+    x_min, x_max = 1.5, 98.5
+    y_min, y_max = 2.0, 98.0
+
+    placed = []
+    positions = {}
+    for _, row in df.sort_values(["Influence", "Aggression"], ascending=[False, True]).iterrows():
+        base_x = float(row["Aggression"])
+        base_y = float(row["Influence"])
+        chosen = None
+
+        for dx, dy in candidate_offsets:
+            lx = min(max(base_x + dx, x_min), x_max)
+            ly = min(max(base_y + dy, y_min), y_max)
+            if all((lx - px) ** 2 + (ly - py) ** 2 >= min_distance**2 for px, py in placed):
+                chosen = (lx, ly)
+                break
+
+        if chosen is None:
+            stack_offset = min(6.0, 1.6 + len(placed) * 0.45)
+            chosen = (
+                min(max(base_x + 2.0, x_min), x_max),
+                min(max(base_y + stack_offset, y_min), y_max),
+            )
+
+        placed.append(chosen)
+        positions[row["Leader"]] = chosen
+
+    return positions
+
+
 def plot_chart(df, history_df):
     # Set futuristic background for the plot
     plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(11, 8.5), facecolor="#050816")
+    fig, ax = plt.subplots(figsize=(12, 8.8), facecolor="#050816")
     ax.set_facecolor("#050816")
 
     background_gradient = np.linspace(0, 1, 256).reshape(1, -1)
@@ -265,6 +262,8 @@ def plot_chart(df, history_df):
 
     # FIX #11: cm.get_cmap is deprecated — use matplotlib.colormaps instead
     colors = plt.colormaps["cool"].resampled(len(df))
+
+    label_positions = _compute_non_overlapping_label_positions(df)
 
     # FIX #7: Use enumerate so color index is always sequential 0..N-1,
     # regardless of the DataFrame's actual index values.
@@ -309,13 +308,30 @@ def plot_chart(df, history_df):
             alpha=0.98,
             zorder=5,
         )
-        ax.text(
-            row["Aggression"] + 2,
-            row["Influence"],
+        label_x, label_y = label_positions[row["Leader"]]
+        ax.annotate(
             row["Leader"].upper(),
+            xy=(row["Aggression"], row["Influence"]),
+            xytext=(label_x, label_y),
+            textcoords="data",
             color="#E9FCFF",
-            fontsize=9,
+            fontsize=8.8,
             fontweight="bold",
+            va="center",
+            bbox={
+                "boxstyle": "round,pad=0.2",
+                "facecolor": (5 / 255, 8 / 255, 22 / 255, 0.78),
+                "edgecolor": (156 / 255, 246 / 255, 255 / 255, 0.22),
+                "linewidth": 0.7,
+            },
+            arrowprops={
+                "arrowstyle": "-",
+                "color": (156 / 255, 246 / 255, 255 / 255, 0.45),
+                "linewidth": 0.9,
+                "shrinkA": 3,
+                "shrinkB": 6,
+            },
+            zorder=6,
         )
 
     ax.set_xlim(0, 100)
@@ -333,6 +349,7 @@ def plot_chart(df, history_df):
         spine.set_color("#3BE7FF")
         spine.set_alpha(0.25)
 
+    fig.tight_layout()
     return fig
 
 
@@ -420,22 +437,11 @@ st.markdown(
 
 try:
     df, history_df = fetch_data_once_a_day()
-    # FIX #1: Use column membership check instead of DataFrame.get(), which is
-    # unreliable for this purpose and would incorrectly flag live data as demo
-    # when the IsDemo column is absent.
-    using_demo_data = history_df["IsDemo"].all() if "IsDemo" in history_df.columns else False
 except Exception as e:
-    st.warning(
-        "Google News RSS is unavailable right now, so demo trend data is being shown instead. "
-        f"({e})"
-    )
-    df, history_df = generate_demo_data()
-    using_demo_data = True
+    st.error(f"Google News RSS is unavailable right now. Live data only mode is enabled. ({e})")
+    df, history_df = pd.DataFrame(), pd.DataFrame()
 
 if not df.empty:
-    if using_demo_data:
-        st.info("Displaying demo leader history because live Google News RSS results were unavailable in this environment.")
-
     strongest_signal = df.loc[df["Influence"].idxmax(), "Leader"]
     highest_alert = df.loc[df["Aggression"].idxmax(), "Leader"]
     st.markdown(
@@ -461,4 +467,4 @@ if not df.empty:
     # FIX #10: Round display scores to 1 decimal place for readability
     st.dataframe(df[["Leader", "Aggression", "Influence"]].round(1))
 else:
-    st.error("No live or demo data could be prepared.")
+    st.error("No live data could be prepared from Google News RSS.")
