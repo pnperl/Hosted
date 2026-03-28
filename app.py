@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
 
-import matplotlib.cm as cm
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -40,51 +39,6 @@ def clean_text(value):
     value = re.sub(r"<[^>]+>", " ", value or "")
     value = html.unescape(value)
     return re.sub(r"\s+", " ", value).strip()
-
-
-def generate_demo_data():
-    base_profiles = {
-        "Putin": (78, 84),
-        "Trump": (64, 92),
-        "Modi": (42, 73),
-        "Kim Jong Un": (88, 58),
-        "Xi Jinping": (54, 90),
-        "Khamenei": (81, 61),
-        "Zelenskyy": (37, 76),
-        "Macron": (34, 68),
-        "Scholz": (29, 63),
-        "Netanyahu": (74, 71),
-    }
-
-    history_rows = []
-    today = datetime.now(timezone.utc)
-    for leader in LEADERS:
-        aggression_base, influence_base = base_profiles[leader]
-        for weeks_ago in range(TAIL_WEEKS - 1, -1, -1):
-            drift = TAIL_WEEKS - weeks_ago - 1
-            history_rows.append(
-                {
-                    "Leader": leader,
-                    "Date": today - timedelta(days=weeks_ago * WEEK_LENGTH_DAYS),
-                    "Aggression": max(0, min(100, aggression_base + (drift * 2.8) - 4.2)),
-                    "Influence": max(5, min(100, influence_base + (drift * 1.7) - 2.5)),
-                    "Volume": max(10, int(influence_base + (drift * 3))),
-                    "IsDemo": True,
-                }
-            )
-
-    history_df = pd.DataFrame(history_rows).sort_values(["Leader", "Date"]).reset_index(drop=True)
-
-    # FIX #5: Use groupby.tail(1) instead of equality datetime match
-    current_df = (
-        history_df.sort_values("Date")
-        .groupby("Leader")
-        .tail(1)
-        .sort_values("Leader")
-        .reset_index(drop=True)
-    )
-
-    return current_df, history_df
 
 
 def analyze_articles(articles, analyzer):
@@ -198,7 +152,7 @@ def fetch_data_once_a_day():
 
     history_df = pd.DataFrame(history_results)
     if history_df.empty:
-        return generate_demo_data()
+        return pd.DataFrame(), pd.DataFrame()
 
     if missing_leaders:
         st.info(
@@ -206,18 +160,18 @@ def fetch_data_once_a_day():
             "Their positions are shown at neutral (50) aggression."
         )
 
-    # FIX #4: Normalise Influence per-leader (relative to each leader's own
-    # max volume) so a historical spike for one leader does not compress
-    # every other leader's current-week influence score.
-    def normalize_influence(group):
-        leader_max = group["Volume"].max()
-        if leader_max == 0:
-            group["Influence"] = 5.0
-        else:
-            group["Influence"] = (group["Volume"] / leader_max) * 95 + 5
-        return group
+    # Influence scaling across all leaders to avoid top-right concentration
+    # where many leaders collapse near 100.
+    volume_cap = history_df["Volume"].quantile(0.9)
+    if pd.isna(volume_cap) or volume_cap <= 0:
+        history_df["Influence"] = 5.0
+    else:
+        bounded_volume = np.minimum(history_df["Volume"], volume_cap)
+        normalized_volume = np.sqrt(bounded_volume / volume_cap)
+        history_df["Influence"] = 5 + (normalized_volume * 90)
 
-    history_df = history_df.groupby("Leader", group_keys=False).apply(normalize_influence)
+    # Keep room for marker halos and annotation boxes near the boundaries.
+    history_df["Influence"] = history_df["Influence"].clip(5, 96)
 
     # FIX #5: Use groupby.tail(1) instead of equality datetime match
     current_df = (
@@ -234,10 +188,107 @@ def fetch_data_once_a_day():
 # ==========================================
 # 2. THE VISUALIZATION (OUTPUT)
 # ==========================================
+def _compute_non_overlapping_label_positions(df):
+    """
+    Backward-compatible shim for older chart code paths that still call this
+    helper name. Returns clamped data-coordinate anchors per leader.
+    """
+    return {
+        row["Leader"]: (
+            min(max(float(row["Aggression"]) + 2.0, 1.5), 98.5),
+            min(max(float(row["Influence"]) + 1.8, 2.0), 98.0),
+        )
+        for _, row in df.iterrows()
+    }
+
+
+def _place_non_overlapping_annotations(ax, point_rows):
+    """
+    Place leader labels with collision checks in pixel space so labels
+    stay within the axes and avoid overlapping each other.
+    """
+    # Offsets in points relative to each marker.
+    candidate_offsets = [
+        (12, 8),
+        (12, -10),
+        (-12, 8),
+        (-12, -10),
+        (0, 14),
+        (0, -14),
+        (16, 0),
+        (-16, 0),
+    ]
+    placed_bboxes = []
+    annotations = []
+
+    # Draw once so text extents can be measured.
+    ax.figure.canvas.draw()
+    renderer = ax.figure.canvas.get_renderer()
+    axes_bbox = ax.get_window_extent(renderer=renderer)
+
+    # Place high-influence labels first for best placement quality.
+    for row in sorted(point_rows, key=lambda item: item["Influence"], reverse=True):
+        annotation = ax.annotate(
+            row["Leader"].upper(),
+            xy=(row["Aggression"], row["Influence"]),
+            xytext=candidate_offsets[0],
+            textcoords="offset points",
+            color="#E9FCFF",
+            fontsize=8.8,
+            fontweight="bold",
+            va="center",
+            bbox={
+                "boxstyle": "round,pad=0.2",
+                "facecolor": (5 / 255, 8 / 255, 22 / 255, 0.78),
+                "edgecolor": (156 / 255, 246 / 255, 255 / 255, 0.22),
+                "linewidth": 0.7,
+            },
+            arrowprops={
+                "arrowstyle": "-",
+                "color": (156 / 255, 246 / 255, 255 / 255, 0.45),
+                "linewidth": 0.9,
+                "shrinkA": 3,
+                "shrinkB": 6,
+            },
+            zorder=6,
+        )
+
+        chosen_bbox = None
+        for dx, dy in candidate_offsets:
+            annotation.set_position((dx, dy))
+            ax.figure.canvas.draw()
+            bbox = annotation.get_window_extent(renderer=renderer).expanded(1.03, 1.12)
+
+            inside_axes = (
+                bbox.x0 >= axes_bbox.x0
+                and bbox.x1 <= axes_bbox.x1
+                and bbox.y0 >= axes_bbox.y0
+                and bbox.y1 <= axes_bbox.y1
+            )
+            collides = any(bbox.overlaps(existing) for existing in placed_bboxes)
+            if inside_axes and not collides:
+                chosen_bbox = bbox
+                break
+
+        if chosen_bbox is None:
+            # Keep the last tested position but still clamp against edge collisions.
+            bbox = annotation.get_window_extent(renderer=renderer)
+            if bbox.x1 > axes_bbox.x1:
+                annotation.set_position((-16, annotation.xyann[1]))
+            elif bbox.x0 < axes_bbox.x0:
+                annotation.set_position((16, annotation.xyann[1]))
+            chosen_bbox = annotation.get_window_extent(renderer=renderer).expanded(1.03, 1.08)
+
+        placed_bboxes.append(chosen_bbox)
+        annotations.append(annotation)
+
+    return annotations
+
+
 def plot_chart(df, history_df):
     # Set futuristic background for the plot
     plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(11, 8.5), facecolor="#050816")
+    fig, ax = plt.subplots(figsize=(12, 8.8), facecolor="#050816")
     ax.set_facecolor("#050816")
 
     background_gradient = np.linspace(0, 1, 256).reshape(1, -1)
@@ -268,6 +319,7 @@ def plot_chart(df, history_df):
 
     # FIX #7: Use enumerate so color index is always sequential 0..N-1,
     # regardless of the DataFrame's actual index values.
+    label_rows = []
     for idx, (_, row) in enumerate(df.iterrows()):
         color = colors(idx)
         leader_history = history_df[history_df["Leader"] == row["Leader"]].sort_values("Date")
@@ -309,14 +361,15 @@ def plot_chart(df, history_df):
             alpha=0.98,
             zorder=5,
         )
-        ax.text(
-            row["Aggression"] + 2,
-            row["Influence"],
-            row["Leader"].upper(),
-            color="#E9FCFF",
-            fontsize=9,
-            fontweight="bold",
+        label_rows.append(
+            {
+                "Leader": row["Leader"],
+                "Aggression": row["Aggression"],
+                "Influence": row["Influence"],
+            }
         )
+
+    _place_non_overlapping_annotations(ax, label_rows)
 
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 100)
@@ -333,6 +386,7 @@ def plot_chart(df, history_df):
         spine.set_color("#3BE7FF")
         spine.set_alpha(0.25)
 
+    fig.tight_layout()
     return fig
 
 
@@ -420,22 +474,11 @@ st.markdown(
 
 try:
     df, history_df = fetch_data_once_a_day()
-    # FIX #1: Use column membership check instead of DataFrame.get(), which is
-    # unreliable for this purpose and would incorrectly flag live data as demo
-    # when the IsDemo column is absent.
-    using_demo_data = history_df["IsDemo"].all() if "IsDemo" in history_df.columns else False
 except Exception as e:
-    st.warning(
-        "Google News RSS is unavailable right now, so demo trend data is being shown instead. "
-        f"({e})"
-    )
-    df, history_df = generate_demo_data()
-    using_demo_data = True
+    st.error(f"Google News RSS is unavailable right now. Live data only mode is enabled. ({e})")
+    df, history_df = pd.DataFrame(), pd.DataFrame()
 
 if not df.empty:
-    if using_demo_data:
-        st.info("Displaying demo leader history because live Google News RSS results were unavailable in this environment.")
-
     strongest_signal = df.loc[df["Influence"].idxmax(), "Leader"]
     highest_alert = df.loc[df["Aggression"].idxmax(), "Leader"]
     st.markdown(
@@ -461,4 +504,4 @@ if not df.empty:
     # FIX #10: Round display scores to 1 decimal place for readability
     st.dataframe(df[["Leader", "Aggression", "Influence"]].round(1))
 else:
-    st.error("No live or demo data could be prepared.")
+    st.error("No live data could be prepared from Google News RSS.")
