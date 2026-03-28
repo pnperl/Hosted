@@ -160,18 +160,18 @@ def fetch_data_once_a_day():
             "Their positions are shown at neutral (50) aggression."
         )
 
-    # FIX #4: Normalise Influence per-leader (relative to each leader's own
-    # max volume) so a historical spike for one leader does not compress
-    # every other leader's current-week influence score.
-    def normalize_influence(group):
-        leader_max = group["Volume"].max()
-        if leader_max == 0:
-            group["Influence"] = 5.0
-        else:
-            group["Influence"] = (group["Volume"] / leader_max) * 95 + 5
-        return group
+    # Influence scaling across all leaders to avoid top-right concentration
+    # where many leaders collapse near 100.
+    volume_cap = history_df["Volume"].quantile(0.9)
+    if pd.isna(volume_cap) or volume_cap <= 0:
+        history_df["Influence"] = 5.0
+    else:
+        bounded_volume = np.minimum(history_df["Volume"], volume_cap)
+        normalized_volume = np.sqrt(bounded_volume / volume_cap)
+        history_df["Influence"] = 5 + (normalized_volume * 90)
 
-    history_df = history_df.groupby("Leader", group_keys=False).apply(normalize_influence)
+    # Keep room for marker halos and annotation boxes near the boundaries.
+    history_df["Influence"] = history_df["Influence"].clip(5, 96)
 
     # FIX #5: Use groupby.tail(1) instead of equality datetime match
     current_df = (
